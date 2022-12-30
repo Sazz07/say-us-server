@@ -1,0 +1,194 @@
+const express = require('express');
+var cors = require('cors');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+require('dotenv').config();
+const jwt = require('jsonwebtoken');
+
+const app = express();
+const port = process.env.PORT || 5000;
+
+// middle wares
+app.use(cors());
+app.use(express.json());
+
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.xn0uv.mongodb.net/?retryWrites=true&w=majority`;
+
+const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 });
+
+function verifyJWT(req, res, next) {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+        return res.status(401).send({ message: 'Unauthorized access' });
+    }
+    const token = authHeader.split(' ')[1];
+
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, function (err, decoded) {
+        if (err) {
+            return res.status(403).send({ message: 'Forbidden access' });
+        }
+        req.decoded = decoded;
+        next();
+    })
+}
+
+async function run() {
+
+    try {
+        const usersCollection = client.db('sayUsDB').collection('users');
+        const postsCollection = client.db('sayUsDB').collection('posts');
+        const commentsCollection = client.db('sayUsDB').collection('comments');
+
+        //JWT
+        app.get('/jwt', async (req, res) => {
+            const email = req.query.email;
+            const query = { email: email };
+            const user = await usersCollection.findOne(query);
+            if (user) {
+                const token = jwt.sign({ email }, `${process.env.ACCESS_TOKEN_SECRET}`, { expiresIn: '10d' });
+                return res.send({ accessToken: token });
+            }
+            res.status(403).send({ accessToken: '' });
+        });
+
+        //Users
+        app.get('/users/:email', async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email };
+            const user = await usersCollection.findOne(query);
+            res.send(user);
+        });
+
+        // Get All User
+        app.get("/users", async (req, res) => {
+            const users = await usersCollection.find({}).toArray();
+            res.send(users);
+        });
+
+        app.post('/users', async (req, res) => {
+            const user = req.body;
+            const filter = { email: user.email };
+            const existingUser = await usersCollection.find(filter).toArray();
+            if (existingUser.length) {
+                const message = "User already exists!";
+                return res.send({ acknowledged: false, message });
+            }
+            const result = await usersCollection.insertOne(user);
+            res.send(result);
+        });
+
+        // update a user
+        app.patch("/user/:id", async (req, res) => {
+            const id = req.params;
+            const user = req.body;
+
+            const filter = { _id: ObjectId(id) };
+            const options = { upsert: true };
+            const updateDoc = {
+                $set: user,
+            };
+            const result = await usersCollection.updateOne(
+                filter,
+                updateDoc,
+                options
+            );
+            res.send(result);
+        });
+
+
+        //Posts
+        app.get('/posts', async (req, res) => {
+            const query = {};
+            const posts = await postsCollection.find(query).toArray();
+            res.send(posts);
+        });
+
+        app.get('/posts/:id', async (req, res) => {
+            const id = req.params.id;
+            const filter = { _id: ObjectId(id) };
+            const post = await postsCollection.findOne(filter);
+            res.send(post);
+        });
+
+        app.post('/posts', verifyJWT, async (req, res) => {
+            const post = req.body;
+            post.loveCount = 0;
+            const result = await postsCollection.insertOne(post);
+            res.send(result);
+        });
+
+        app.put('/posts/addLove/:id', async (req, res) => {
+            const id = req.params.id;
+            const filter = { _id: ObjectId(id) };
+            const post = await postsCollection.findOne(filter);
+            let count = post.loveCount;
+            count++;
+            const updatedDoc = {
+                $set: {
+                    loveCount: count
+                }
+            }
+            const options = { upsert: true };
+            const result = await postsCollection.updateOne(filter, updatedDoc, options);
+            res.send(result);
+        });
+
+        app.put('/posts/removeLove/:id', async (req, res) => {
+            const id = req.params.id;
+            const filter = { _id: ObjectId(id) };
+            const post = await postsCollection.findOne(filter);
+            let count = post.loveCount;
+            count--;
+            const updatedDoc = {
+                $set: {
+                    loveCount: count
+                }
+            }
+            const options = { upsert: true };
+            const result = await postsCollection.updateOne(filter, updatedDoc, options);
+            res.send(result);
+        });
+
+        //Top posts
+        app.get('/topPosts', async (req, res) => {
+            const topPosts = await postsCollection.find({}).sort({ loveCount: -1 }).limit(3).toArray();
+            res.send(topPosts);
+        });
+
+        //Comments
+        app.post('/comments', async (req, res) => {
+            const commentInfo = req.body;
+            const result = await commentsCollection.insertOne(commentInfo);
+            res.send(result);
+        });
+
+        app.get('/comments/:id', async (req, res) => {
+            const id = req.params.id;
+            const filter = { postId: id };
+            const comments = await commentsCollection.find(filter).toArray();
+            res.send(comments);
+        });
+
+        //Details
+        app.get('/details/:id', verifyJWT, async (req, res) => {
+            const id = req.params.id;
+            const filter = { _id: ObjectId(id) };
+            const result = await postsCollection.findOne(filter);
+            res.send(result);
+        });
+
+    }
+    finally {
+
+    }
+}
+
+run().catch(err => console.error(err));
+
+app.get('/', (req, res) => {
+    res.send('SayUs Server running');
+});
+
+app.listen(port, () => {
+    console.log('Server is running on port', port);
+});
